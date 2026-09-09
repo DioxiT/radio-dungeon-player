@@ -6,7 +6,7 @@ BACKEND="$ROOT/backend"
 VENV_PY="$BACKEND/.venv/bin/python"
 
 if [ ! -x "$VENV_PY" ]; then
-  echo "Похоже, установка ещё не выполнена. Сначала запусти setup.sh."
+  echo "It looks like the installation hasn't been completed yet. First, run setup.sh."
   exit 1
 fi
 
@@ -19,6 +19,6 @@ fi
   fi
 ) &
 
-echo "Плеер запускается на http://localhost:8000 (сейчас откроется в браузере)."
-echo "Останови сервер сочетанием Ctrl+C."
+echo "The player can be accessed at http://localhost:8000 (it will now open in your browser)."
+echo "Stop the server by pressing Ctrl+C."
 "$VENV_PY" -m uvicorn app.main:app --app-dir "$BACKEND"

@@ -8,7 +8,7 @@ BACKEND="$ROOT/backend"
 VENV="$BACKEND/.venv"
 OS="$(uname -s)"
 
-echo "== radio_dungeon player: установка =="
+echo "== radio_dungeon player: installation =="
 
 # --- python -----------------------------------------------------------------
 PYTHON=""
@@ -16,7 +16,7 @@ for cmd in python3 python; do
   if command -v "$cmd" >/dev/null 2>&1; then PYTHON="$cmd"; break; fi
 done
 if [ -z "$PYTHON" ]; then
-  echo "Python не найден."
+  echo "Python not found."
   if [ "$OS" = "Darwin" ]; then
     echo "  brew install python@3.12"
   else
@@ -26,12 +26,12 @@ if [ -z "$PYTHON" ]; then
   fi
   exit 1
 fi
-echo "Найден $("$PYTHON" --version) (нужен 3.10+, если версия старше - обнови Python)."
+echo "Found $(“$PYTHON” --version) (version 3.10 or later is required; if your version is older, please update Python)."
 
 # --- ffmpeg (желательно, не обязательно) -------------------------------------
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo ""
-  echo "ffmpeg не найден в PATH - часть треков может не проигрываться. Поставить можно так:"
+  echo "ffmpeg was not found in the PATH—some tracks may not play. You can set it up this way:"
   if [ "$OS" = "Darwin" ]; then
     echo "  brew install ffmpeg"
   else
@@ -39,16 +39,16 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
     echo "  sudo dnf install ffmpeg   (Fedora)"
     echo "  sudo pacman -S ffmpeg     (Arch)"
   fi
-  echo "(можно продолжить и без него - доставить получится в любой момент)"
+  echo "(You can continue without it—you'll be able to deliver it at any time.)"
   echo ""
 fi
 
 # --- venv + зависимости ---------------------------------------------------------
 if [ ! -d "$VENV" ]; then
-  echo "Создаю виртуальное окружение..."
+  echo "I'm creating a virtual environment..."
   "$PYTHON" -m venv "$VENV"
 fi
-echo "Ставлю зависимости (может занять пару минут)..."
+echo "I'm setting up the dependencies (this might take a couple of minutes)..."
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$BACKEND/requirements.txt"
 
@@ -56,28 +56,28 @@ echo "Ставлю зависимости (может занять пару ми
 ENV_FILE="$BACKEND/.env"
 if [ ! -f "$ENV_FILE" ]; then
   echo ""
-  echo "Нужны твои личные api_id и api_hash с https://my.telegram.org/apps"
-  echo "(зайди под своим Telegram-аккаунтом, раздел 'API development tools', создай приложение - любое название подойдёт)."
+  echo "We need your personal api_id and api_hash from https://my.telegram.org/apps"
+  echo "(Log in with your Telegram account, go to the “API development tools” section, and create an app—any name will do)"
   read -p "TG_API_ID: " API_ID
   read -p "TG_API_HASH: " API_HASH
-  read -p "Канал без @ (Enter = radio_dungeon): " CHANNEL
+  read -p "Channel without @ (Enter = radio_dungeon): " CHANNEL
   CHANNEL="${CHANNEL:-radio_dungeon}"
   cat > "$ENV_FILE" <<EOF
 TG_API_ID=$API_ID
 TG_API_HASH=$API_HASH
 TG_CHANNEL=$CHANNEL
 EOF
-  echo "Сохранено в backend/.env"
+  echo "Saved in backend/.env"
 fi
 
 # --- первый вход в Telegram --------------------------------------------------------
 SESSION_FILE="$BACKEND/data/tg_session.session"
 if [ ! -f "$SESSION_FILE" ]; then
   echo ""
-  echo "Первый вход в Telegram - введи номер телефона и код из приложения, когда попросят."
+  echo "When you log in to Telegram for the first time, enter your phone number and the code from the app when prompted."
   (cd "$BACKEND" && "$VENV/bin/python" -m app.login)
 fi
 
 echo ""
-echo "Готово! Запускаю плеер..."
+echo "All done! I'm starting the player..."
 exec bash "$ROOT/run.sh"
