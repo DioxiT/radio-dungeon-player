@@ -1,6 +1,7 @@
 const audio = document.getElementById("audio");
 const syncBtn = document.getElementById("sync-btn");
 const syncStatus = document.getElementById("sync-status");
+const modeBadge = document.getElementById("mode-badge");
 const nowTitle = document.getElementById("now-title");
 const nowArtist = document.getElementById("now-artist");
 const artwork = document.getElementById("artwork");
@@ -86,6 +87,20 @@ function saveUiPrefs() {
 }
 
 // --- data loading -------------------------------------------------------------
+
+let appMode = { mode: "account", likes_reach_telegram: true };
+
+async function loadMode() {
+  try {
+    appMode = await fetch("/api/mode").then((r) => r.json());
+  } catch {
+    // Older backend without /api/mode - assume the account behaviour it had.
+  }
+  if (!appMode.likes_reach_telegram) {
+    modeBadge.textContent = "без авторизации · лайки только здесь";
+    modeBadge.hidden = false;
+  }
+}
 
 async function loadPosts() {
   const res = await fetch("/api/posts");
@@ -576,7 +591,13 @@ function renderPostCard(post) {
     const likeBtn = document.createElement("button");
     likeBtn.className = "like-btn" + (post.liked ? " liked" : "");
     likeBtn.textContent = "👍";
-    likeBtn.title = post.liked ? "Убрать лайк" : "Лайкнуть пост";
+    likeBtn.title = appMode.likes_reach_telegram
+      ? post.liked
+        ? "Убрать лайк (и реакцию в канале)"
+        : "Лайкнуть пост (и поставить реакцию в канале)"
+      : post.liked
+        ? "Убрать лайк (хранится только на этом компьютере)"
+        : "Лайкнуть пост (сохранится только на этом компьютере)";
     likeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       toggleLike(post);
@@ -736,7 +757,7 @@ async function pollSyncStatus() {
   filterSelect.value = filterMode;
   updateModeButtons();
 
-  await Promise.all([loadPosts(), loadCategories()]);
+  await Promise.all([loadMode(), loadPosts(), loadCategories()]);
   renderCategoryManager();
   renderCategoryFilterChips();
   renderPostList();
