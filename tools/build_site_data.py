@@ -1,0 +1,204 @@
+"""Bake the static data file the web player loads.
+
+The desktop player asks its own backend for a stream url every time you press play.
+The web player has no backend: this script resolves every track ahead of time and
+writes one json file that the browser reads directly. Bandcamp's urls last 24 hours,
+so this is meant to run on a schedule (every few hours) and republish.
+
+Requests are kept low by going album-first: every track in one Telegram post came from
+the same album link, so one album page yields stream urls for all of them at once. The
+album url per post is cached in albums.json, so only the first run pays for discovery.
+
+    python tools/build_site_data.py --limit 20     # quick prototype run
+    python tools/build_site_data.py                # everything
+"""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import httpx
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "backend"))
+
+from app import bandcamp  # noqa: E402
+
+TRACKS_FILE = ROOT / "backend" / "data" / "tracks.json"
+OUT_DIR = ROOT / "site" / "data"
+OUT_FILE = OUT_DIR / "posts.json"
+ALBUM_CACHE = OUT_DIR / "albums.json"
+
+CHANNEL = "radio_dungeon"
+REQUEST_DELAY = 0.5  # be a polite guest on someone else's server
+TIMEOUT = 25
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 radio-dungeon-player"
+)
+
+
+def load_json(path, default):
+    if not path.exists():
+        return default
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def group_posts(tracks: list[dict]) -> list[dict]:
+    """Same grouping the desktop backend does, minus the personal data."""
+    posts: dict[str, dict] = {}
+    order: list[str] = []
+    for t in tracks:
+        mid = t.get("message_id")
+        key = f"m:{mid}" if mid is not None else f"t:{t['id']}"
+        if key not in posts:
+            posts[key] = {
+                "message_id": mid,
+                "message_date": t.get("message_date"),
+                "message_text": t.get("message_text", "") if mid is not None else "",
+                "telegram_url": f"https://t.me/{CHANNEL}/{mid}" if mid is not None else None,
+                "tracks": [],
+            }
+            order.append(key)
+        posts[key]["tracks"].append(t)
+    return [posts[k] for k in order]
+
+
+def fetch(client: httpx.Client, url: str) -> str | None:
+    try:
+        r = client.get(url)
+    except httpx.HTTPError as exc:
+        print(f"    сеть: {type(exc).__name__}")
+        return None
+    if r.status_code != 200:
+        print(f"    HTTP {r.status_code}")
+        return None
+    return r.text
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=0, help="обработать только N постов")
+    ap.add_argument(
+        "--tracks",
+        type=Path,
+        default=TRACKS_FILE,
+        help="откуда брать метаданные канала (по умолчанию backend/data/tracks.json)",
+    )
+    args = ap.parse_args()
+
+    tracks = load_json(args.tracks, [])
+    if isinstance(tracks, dict):
+        tracks = list(tracks.values())
+    if not tracks:
+        print(f"нет треков в {args.tracks} - сначала синхронизируй канал")
+        return 1
+
+    posts = group_posts(tracks)
+    if args.limit:
+        posts = posts[: args.limit]
+    print(f"постов: {len(posts)}, треков: {sum(len(p['tracks']) for p in posts)}")
+
+    album_cache: dict[str, str] = load_json(ALBUM_CACHE, {})
+    out_posts = []
+    stats = {"resolved": 0, "skipped": 0, "posts_failed": 0, "cache_hits": 0}
+    soonest_expiry = None
+
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "en,ru;q=0.9"}
+    with httpx.Client(timeout=TIMEOUT, follow_redirects=True, headers=headers) as client:
+        for i, post in enumerate(posts, 1):
+            label = f"[{i}/{len(posts)}] пост {post['message_id']}"
+            originals = post["tracks"]
+            bandcamp_tracks = [t for t in originals if "bandcamp.com" in t["webpage_url"]]
+            if not bandcamp_tracks:
+                # youtube and friends have short-lived, ip-bound urls - they can't be
+                # baked, so they simply don't make it into the static build for now.
+                stats["skipped"] += len(originals)
+                print(f"{label}: нет bandcamp-треков, пропуск")
+                continue
+
+            key = str(post["message_id"])
+            album_url = album_cache.get(key)
+            if album_url:
+                stats["cache_hits"] += 1
+            else:
+                probe = bandcamp_tracks[0]["webpage_url"]
+                html = fetch(client, probe)
+                time.sleep(REQUEST_DELAY)
+                album_url = bandcamp.album_url_from_track_page(html, probe) if html else None
+                if not album_url:
+                    # A standalone single has no parent album - its own page is the source.
+                    album_url = probe
+                album_cache[key] = album_url
+
+            html = fetch(client, album_url)
+            time.sleep(REQUEST_DELAY)
+            if html is None:
+                stats["posts_failed"] += 1
+                print(f"{label}: страница альбома недоступна")
+                continue
+
+            try:
+                album = bandcamp.parse_page(html, album_url)
+            except bandcamp.NotBandcamp:
+                stats["posts_failed"] += 1
+                print(f"{label}: не похоже на bandcamp: {album_url}")
+                continue
+
+            by_url = {t.webpage_url: t for t in album.tracks}
+            baked = []
+            for original in bandcamp_tracks:
+                fresh = by_url.get(original["webpage_url"])
+                if fresh is None:
+                    stats["skipped"] += 1
+                    continue
+                expiry = bandcamp.stream_expiry(fresh.stream_url)
+                if expiry and (soonest_expiry is None or expiry < soonest_expiry):
+                    soonest_expiry = expiry
+                baked.append(
+                    {
+                        "id": original["id"],
+                        "title": fresh.title or original["title"],
+                        "artist": fresh.artist or original.get("artist", ""),
+                        "thumbnail": fresh.thumbnail or original.get("thumbnail"),
+                        "webpage_url": original["webpage_url"],
+                        "album_url": album.url,
+                        "stream_url": fresh.stream_url,
+                        "duration": fresh.duration,
+                    }
+                )
+
+            stats["resolved"] += len(baked)
+            print(f"{label}: {len(baked)}/{len(bandcamp_tracks)} треков — {album.title[:45]}")
+            if baked:
+                out_posts.append({**post, "tracks": baked})
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": int(time.time()),
+        "expires_at": soonest_expiry,
+        "channel": CHANNEL,
+        "posts": out_posts,
+    }
+    with open(OUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    with open(ALBUM_CACHE, "w", encoding="utf-8") as f:
+        json.dump(album_cache, f, ensure_ascii=False, indent=2)
+
+    size_mb = OUT_FILE.stat().st_size / 1024 / 1024
+    print()
+    print(f"записано: {OUT_FILE.relative_to(ROOT)}  ({size_mb:.2f} МБ)")
+    print(f"  постов: {len(out_posts)}, треков: {stats['resolved']}")
+    print(f"  пропущено треков: {stats['skipped']}, постов с ошибкой: {stats['posts_failed']}")
+    print(f"  album-ссылок из кеша: {stats['cache_hits']}")
+    if soonest_expiry:
+        left = (soonest_expiry - time.time()) / 3600
+        print(f"  самая ранняя ссылка протухнет через {left:.1f} ч")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

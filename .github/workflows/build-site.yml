@@ -1,0 +1,79 @@
+# Rebuild and publish the web player.
+#
+# Bandcamp hands out stream urls that stop working after 24 hours, and the static site
+# has no backend to refresh them on demand - so the whole catalogue is re-baked here on
+# a schedule and republished. Every 6 hours leaves a 4x margin against that expiry.
+#
+# Nothing secret is involved: the channel is read through its public web preview and
+# bandcamp pages are read anonymously.
+
+name: build-site
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [web-player]
+    paths:
+      - "site/**"
+      - "tools/**"
+      - "backend/app/bandcamp.py"
+      - ".github/workflows/build-site.yml"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-site
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet httpx beautifulsoup4 python-dotenv
+
+      # The catalogue (which posts exist, which tracks are in them) is committed, so a
+      # run only has to fetch what the channel added since last time.
+      - name: Sync new posts from the channel
+        env:
+          TG_MODE: anonymous
+          TG_DATA_DIR: ${{ github.workspace }}/site/data/catalog
+        run: python tools/sync_catalog.py
+
+      - name: Bake stream urls
+        run: python tools/build_site_data.py --tracks site/data/catalog/tracks.json
+
+      # posts.json is rewritten every run and would bloat history fast, so it ships to
+      # Pages as an artifact instead. Only the catalogue and the album cache are kept.
+      - name: Commit catalogue changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/data/catalog site/data/albums.json
+          git diff --staged --quiet || git commit -m "Update channel catalogue"
+          git push
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
