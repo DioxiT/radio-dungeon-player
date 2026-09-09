@@ -8,10 +8,27 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from telethon import TelegramClient
 
-from . import resolver, store, telegram_sync
-from .config import API_HASH, API_ID, CHANNEL, FRONTEND_DIR, SESSION_PATH
+from . import resolver, store, sync_core, telegram_sync, web_sync
+from .config import (
+    API_HASH,
+    API_ID,
+    CHANNEL,
+    FRONTEND_DIR,
+    SESSION_PATH,
+    has_credentials,
+    resolve_mode,
+)
 
-client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+MODE = resolve_mode()
+
+if MODE == "account" and not has_credentials():
+    raise RuntimeError(
+        "TG_MODE=account needs TG_API_ID and TG_API_HASH in backend/.env. "
+        "Remove TG_MODE (or set it to anonymous) to read the channel without an account."
+    )
+
+# Anonymous mode never touches Telegram's API, so no client is created at all.
+client = TelegramClient(SESSION_PATH, API_ID, API_HASH) if MODE == "account" else None
 _sync_task: asyncio.Task | None = None
 
 
@@ -22,27 +39,34 @@ def _launch_sync_task():
 
     async def runner():
         try:
-            await telegram_sync.sync(client, CHANNEL)
+            if MODE == "account":
+                await sync_core.sync(lambda last_id: telegram_sync.fetch_posts(client, CHANNEL, last_id))
+            else:
+                await sync_core.sync(lambda last_id: web_sync.fetch_posts(CHANNEL, last_id))
         except Exception:
-            pass  # already recorded in telegram_sync.get_status()
+            pass  # already recorded in sync_core.get_status()
 
     _sync_task = asyncio.create_task(runner())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await client.connect()
-    if not await client.is_user_authorized():
-        raise RuntimeError(
-            "Telegram session is not authorized. Run `python -m app.login` once from the "
-            "backend directory to log in interactively, then restart the server."
-        )
+    print(f"[startup] mode: {MODE}, channel: @{CHANNEL}")
+    if client is not None:
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise RuntimeError(
+                "Telegram session is not authorized. Run `python -m app.login` once from "
+                "the backend directory to log in interactively, then restart the server - "
+                "or set TG_MODE=anonymous in backend/.env to run without an account."
+            )
     store.migrate_liked_tracks_to_user_data()
     # Posts show up rarely, so syncing once on startup is enough - no need to make the
     # user click "Обновить" every time they open the player.
     _launch_sync_task()
     yield
-    await client.disconnect()
+    if client is not None:
+        await client.disconnect()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -62,7 +86,12 @@ async def start_sync():
 
 @app.get("/api/sync/status")
 async def sync_status():
-    return telegram_sync.get_status()
+    return sync_core.get_status()
+
+
+@app.get("/api/mode")
+async def mode():
+    return {"mode": MODE, "channel": CHANNEL, "likes_reach_telegram": MODE == "account"}
 
 
 @app.get("/api/posts")
@@ -75,12 +104,15 @@ async def like_post(message_id: int):
     if not store.track_ids_for_message(message_id):
         raise HTTPException(404, "unknown post")
     new_liked = not store.is_post_liked(message_id)
-    try:
-        await telegram_sync.set_like(client, CHANNEL, message_id, new_liked)
-    except Exception as exc:
-        raise HTTPException(502, f"could not react: {exc}") from exc
+    # Anonymous mode can't react on the user's behalf, but the like is still worth
+    # keeping: it drives the "Мои лайки" filter and lives in user_data.json either way.
+    if client is not None:
+        try:
+            await telegram_sync.set_like(client, CHANNEL, message_id, new_liked)
+        except Exception as exc:
+            raise HTTPException(502, f"could not react: {exc}") from exc
     store.set_post_liked(message_id, new_liked)
-    return {"liked": new_liked}
+    return {"liked": new_liked, "synced_to_telegram": client is not None}
 
 
 @app.get("/api/categories")

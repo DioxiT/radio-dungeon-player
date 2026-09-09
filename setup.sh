@@ -52,27 +52,44 @@ echo "I'm setting up the dependencies (this might take a couple of minutes)..."
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$BACKEND/requirements.txt"
 
-# --- .env ------------------------------------------------------------------------
+# --- режим и .env ------------------------------------------------------------------
 ENV_FILE="$BACKEND/.env"
 if [ ! -f "$ENV_FILE" ]; then
   echo ""
-  echo "We need your personal api_id and api_hash from https://my.telegram.org/apps"
-  echo "(Log in with your Telegram account, go to the “API development tools” section, and create an app—any name will do)"
-  read -p "TG_API_ID: " API_ID
-  read -p "TG_API_HASH: " API_HASH
+  echo "How should the player read the channel?"
+  echo "  1) Without logging in - the player reads the channel's public page."
+  echo "     Nothing to set up. Likes are kept on this computer only."
+  echo "  2) With a Telegram login - likes are also sent to the channel as a reaction."
+  echo "     Needs api_id/api_hash and a login with your phone number."
+  read -p "Choice [1]: " MODE_CHOICE
+  MODE_CHOICE="${MODE_CHOICE:-1}"
   read -p "Channel without @ (Enter = radio_dungeon): " CHANNEL
   CHANNEL="${CHANNEL:-radio_dungeon}"
-  cat > "$ENV_FILE" <<EOF
+
+  if [ "$MODE_CHOICE" = "2" ]; then
+    echo ""
+    echo "We need your personal api_id and api_hash from https://my.telegram.org/apps"
+    echo "(Log in with your Telegram account, go to the “API development tools” section, and create an app—any name will do)"
+    read -p "TG_API_ID: " API_ID
+    read -p "TG_API_HASH: " API_HASH
+    cat > "$ENV_FILE" <<EOF
+TG_MODE=account
+TG_CHANNEL=$CHANNEL
 TG_API_ID=$API_ID
 TG_API_HASH=$API_HASH
+EOF
+  else
+    cat > "$ENV_FILE" <<EOF
+TG_MODE=anonymous
 TG_CHANNEL=$CHANNEL
 EOF
+  fi
   echo "Saved in backend/.env"
 fi
 
-# --- первый вход в Telegram --------------------------------------------------------
+# --- первый вход в Telegram (только для режима с авторизацией) ----------------------
 SESSION_FILE="$BACKEND/data/tg_session.session"
-if [ ! -f "$SESSION_FILE" ]; then
+if grep -q '^TG_MODE=account' "$ENV_FILE" && [ ! -f "$SESSION_FILE" ]; then
   echo ""
   echo "When you log in to Telegram for the first time, enter your phone number and the code from the app when prompted."
   (cd "$BACKEND" && "$VENV/bin/python" -m app.login)

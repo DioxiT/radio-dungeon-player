@@ -3,4 +3,5 @@ uvicorn[standard]
 telethon
 yt-dlp
 httpx
+beautifulsoup4
 python-dotenv

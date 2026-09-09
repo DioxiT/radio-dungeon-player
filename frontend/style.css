@@ -30,6 +30,7 @@ button {
 button:hover { background: #3a3a48; }
 button:disabled { opacity: 0.4; cursor: default; }
 #sync-status { color: #999; font-size: 0.9rem; }
+#mode-badge { margin-left: auto; color: #777; font-size: 0.8rem; border: 1px solid #333; border-radius: 999px; padding: 0.15rem 0.6rem; }
 
 .player {
   display: flex;

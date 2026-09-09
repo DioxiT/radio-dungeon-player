@@ -46,27 +46,44 @@ Write-Host "I'm setting up the dependencies (this might take a couple of minutes
 & $venvPython -m pip install --quiet --upgrade pip
 & $venvPython -m pip install --quiet -r (Join-Path $backend "requirements.txt")
 
-# --- .env ----------------------------------------------------------------------
+# --- режим и .env --------------------------------------------------------------
 $envFile = Join-Path $backend ".env"
 if (-not (Test-Path $envFile)) {
     Write-Host ""
-    Write-Host "We need your personal api_id and api_hash from https://my.telegram.org/apps" -ForegroundColor Cyan
-    Write-Host "(Log in with your Telegram account, go to the “API development tools” section, and create an app—any name will do)"
-    $apiId = Read-Host "TG_API_ID"
-    $apiHash = Read-Host "TG_API_HASH"
+    Write-Host "How should the player read the channel?" -ForegroundColor Cyan
+    Write-Host "  1) Without logging in - the player reads the channel's public page."
+    Write-Host "     Nothing to set up. Likes are kept on this computer only."
+    Write-Host "  2) With a Telegram login - likes are also sent to the channel as a reaction."
+    Write-Host "     Needs api_id/api_hash and a login with your phone number."
+    $modeChoice = Read-Host "Choice [1]"
+    if ([string]::IsNullOrWhiteSpace($modeChoice)) { $modeChoice = "1" }
     $channel = Read-Host "Channel without @ (Enter = radio_dungeon)"
     if ([string]::IsNullOrWhiteSpace($channel)) { $channel = "radio_dungeon" }
-    @"
+
+    if ($modeChoice -eq "2") {
+        Write-Host ""
+        Write-Host "We need your personal api_id and api_hash from https://my.telegram.org/apps" -ForegroundColor Cyan
+        Write-Host "(Log in with your Telegram account, go to the “API development tools” section, and create an app—any name will do)"
+        $apiId = Read-Host "TG_API_ID"
+        $apiHash = Read-Host "TG_API_HASH"
+        @"
+TG_MODE=account
+TG_CHANNEL=$channel
 TG_API_ID=$apiId
 TG_API_HASH=$apiHash
+"@ | Set-Content -Encoding utf8 $envFile
+    } else {
+        @"
+TG_MODE=anonymous
 TG_CHANNEL=$channel
 "@ | Set-Content -Encoding utf8 $envFile
+    }
     Write-Host "Saved in backend\.env"
 }
 
-# --- первый вход в Telegram ----------------------------------------------------
+# --- первый вход в Telegram (только для режима с авторизацией) ------------------
 $sessionFile = Join-Path $backend "data\tg_session.session"
-if (-not (Test-Path $sessionFile)) {
+if ((Select-String -Path $envFile -Pattern '^TG_MODE=account' -Quiet) -and (-not (Test-Path $sessionFile))) {
     Write-Host ""
     Write-Host "When you log in to Telegram for the first time, enter your phone number and the code from the app when prompted." -ForegroundColor Cyan
     Push-Location $backend
