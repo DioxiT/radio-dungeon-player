@@ -43,6 +43,14 @@ jobs:
       - name: Install dependencies
         run: pip install --quiet httpx beautifulsoup4 python-dotenv
 
+      # Guards the install list above: the build reads bandcamp's own json and must not
+      # drag yt-dlp in through an import chain.
+      - name: Check the build imports without yt-dlp
+        run: python backend/tests/test_web_build_imports.py
+
+      - name: Check the bandcamp parser
+        run: python backend/tests/test_bandcamp.py
+
       # The catalogue (which posts exist, which tracks are in them) is committed, so a
       # run only has to fetch what the channel added since last time.
       - name: Sync new posts from the channel
