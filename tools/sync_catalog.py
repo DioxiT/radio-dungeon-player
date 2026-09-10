@@ -11,6 +11,7 @@ Telegram account - which is what lets it run unattended in CI.
 """
 
 import asyncio
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,7 +24,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app import bandcamp, store, web_sync  # noqa: E402
 from app.config import CHANNEL  # noqa: E402
 
-REQUEST_DELAY = 0.5
+REQUEST_DELAY = float(os.environ.get("BC_REQUEST_DELAY", "1.0"))
 TIMEOUT = 25
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -33,16 +34,11 @@ USER_AGENT = (
 
 def expand(client: httpx.Client, link: str) -> list[bandcamp.BcTrack]:
     """Turn one bandcamp link into its tracks."""
-    try:
-        r = client.get(link)
-    except httpx.HTTPError as exc:
-        print(f"    сеть: {type(exc).__name__}")
-        return []
-    if r.status_code != 200:
-        print(f"    HTTP {r.status_code}")
+    html = bandcamp.fetch_page(client, link)
+    if html is None:
         return []
     try:
-        return bandcamp.parse_page(r.text, link).tracks
+        return bandcamp.parse_page(html, link).tracks
     except (bandcamp.NotBandcamp, ValueError):
         return []
 

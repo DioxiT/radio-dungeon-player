@@ -15,6 +15,7 @@ album url per post is cached in albums.json, so only the first run pays for disc
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -32,7 +33,12 @@ OUT_FILE = OUT_DIR / "posts.json"
 ALBUM_CACHE = OUT_DIR / "albums.json"
 
 CHANNEL = "radio_dungeon"
-REQUEST_DELAY = 0.5  # be a polite guest on someone else's server
+REQUEST_DELAY = float(os.environ.get("BC_REQUEST_DELAY", "1.0"))
+
+# A run only has to touch albums whose links are running out. Links last 24h and the
+# job runs far more often than that, so most runs re-fetch nothing at all - which is
+# what keeps us from hammering bandcamp into rate-limiting us.
+REFRESH_MARGIN = float(os.environ.get("BC_REFRESH_MARGIN_HOURS", "10")) * 3600
 TIMEOUT = 25
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -67,18 +73,6 @@ def group_posts(tracks: list[dict]) -> list[dict]:
     return [posts[k] for k in order]
 
 
-def fetch(client: httpx.Client, url: str) -> str | None:
-    try:
-        r = client.get(url)
-    except httpx.HTTPError as exc:
-        print(f"    сеть: {type(exc).__name__}")
-        return None
-    if r.status_code != 200:
-        print(f"    HTTP {r.status_code}")
-        return None
-    return r.text
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="обработать только N постов")
@@ -103,8 +97,19 @@ def main() -> int:
     print(f"постов: {len(posts)}, треков: {sum(len(p['tracks']) for p in posts)}")
 
     album_cache: dict[str, str] = load_json(ALBUM_CACHE, {})
+
+    # Whatever the previous run baked is still good until its links approach expiry.
+    previous = load_json(OUT_FILE, {})
+    still_good: dict[str, dict] = {}
+    cutoff = time.time() + REFRESH_MARGIN
+    for post in previous.get("posts", []):
+        for t in post.get("tracks", []):
+            expiry = bandcamp.stream_expiry(t.get("stream_url", ""))
+            if expiry and expiry > cutoff:
+                still_good[t["id"]] = t
+
     out_posts = []
-    stats = {"resolved": 0, "skipped": 0, "posts_failed": 0, "cache_hits": 0}
+    stats = {"resolved": 0, "skipped": 0, "posts_failed": 0, "cache_hits": 0, "reused": 0}
     soonest_expiry = None
 
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "en,ru;q=0.9"}
@@ -120,13 +125,25 @@ def main() -> int:
                 print(f"{label}: нет bandcamp-треков, пропуск")
                 continue
 
+            # Nothing to ask bandcamp about if every link here is still comfortably alive.
+            reusable = [still_good[t["id"]] for t in bandcamp_tracks if t["id"] in still_good]
+            if len(reusable) == len(bandcamp_tracks):
+                for t in reusable:
+                    expiry = bandcamp.stream_expiry(t["stream_url"])
+                    if expiry and (soonest_expiry is None or expiry < soonest_expiry):
+                        soonest_expiry = expiry
+                stats["reused"] += len(reusable)
+                stats["resolved"] += len(reusable)
+                out_posts.append({**post, "tracks": reusable})
+                continue
+
             key = str(post["message_id"])
             album_url = album_cache.get(key)
             if album_url:
                 stats["cache_hits"] += 1
             else:
                 probe = bandcamp_tracks[0]["webpage_url"]
-                html = fetch(client, probe)
+                html = bandcamp.fetch_page(client, probe)
                 time.sleep(REQUEST_DELAY)
                 album_url = bandcamp.album_url_from_track_page(html, probe) if html else None
                 if not album_url:
@@ -134,7 +151,7 @@ def main() -> int:
                     album_url = probe
                 album_cache[key] = album_url
 
-            html = fetch(client, album_url)
+            html = bandcamp.fetch_page(client, album_url)
             time.sleep(REQUEST_DELAY)
             if html is None:
                 stats["posts_failed"] += 1
@@ -194,6 +211,7 @@ def main() -> int:
     print(f"  постов: {len(out_posts)}, треков: {stats['resolved']}")
     print(f"  пропущено треков: {stats['skipped']}, постов с ошибкой: {stats['posts_failed']}")
     print(f"  album-ссылок из кеша: {stats['cache_hits']}")
+    print(f"  переиспользовано живых ссылок: {stats['reused']} (запросов не потребовалось)")
     if soonest_expiry:
         left = (soonest_expiry - time.time()) / 3600
         print(f"  самая ранняя ссылка протухнет через {left:.1f} ч")

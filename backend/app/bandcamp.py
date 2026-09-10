@@ -13,11 +13,19 @@ and no regex guessing against markup.
 import html as htmlmod
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
 # Bandcamp stamps every stream url with the moment it stops working.
 STREAM_TTL_SECONDS = 24 * 60 * 60
+
+# Refreshing the whole catalogue means a few hundred requests in a row, and bandcamp
+# answers 429 when it has had enough. Backing off and retrying is the difference between
+# losing those albums from the site and just taking a little longer.
+MAX_ATTEMPTS = 4
+BACKOFF_BASE = 5  # seconds: 5, 10, 20 between attempts
+MAX_BACKOFF = 120
 
 _TRALBUM_RE = re.compile(r'data-tralbum="([^"]+)"')
 _OG_IMAGE_RE = re.compile(r'<meta property="og:image" content="([^"]+)"')
@@ -47,6 +55,44 @@ class BcAlbum:
     artist: str = ""
     thumbnail: str | None = None
     tracks: list[BcTrack] = field(default_factory=list)
+
+
+def retry_delay(attempt: int, retry_after: str | None) -> float:
+    """How long to wait before retrying - the server's own answer wins if it gave one."""
+    if retry_after:
+        try:
+            return min(float(retry_after), MAX_BACKOFF)
+        except ValueError:
+            # Retry-After may be an HTTP date instead of seconds; fall through.
+            pass
+    return min(BACKOFF_BASE * (2**attempt), MAX_BACKOFF)
+
+
+def fetch_page(client, url: str, log=print) -> str | None:
+    """GET a bandcamp page, waiting out rate limits. None means give up on this page."""
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            response = client.get(url)
+        except Exception as exc:  # httpx errors, dns, timeouts
+            wait = retry_delay(attempt, None)
+            log(f"    сеть: {type(exc).__name__}, повтор через {wait:.0f}с")
+            time.sleep(wait)
+            continue
+
+        if response.status_code == 200:
+            return response.text
+        # 429 is bandcamp asking us to slow down; 5xx is bandcamp having a bad moment.
+        if response.status_code == 429 or response.status_code >= 500:
+            wait = retry_delay(attempt, response.headers.get("Retry-After"))
+            log(f"    HTTP {response.status_code}, повтор через {wait:.0f}с")
+            time.sleep(wait)
+            continue
+        # 404 and friends will not get better by asking again.
+        log(f"    HTTP {response.status_code}")
+        return None
+
+    log(f"    сдаюсь после {MAX_ATTEMPTS} попыток: {url}")
+    return None
 
 
 def stream_expiry(stream_url: str) -> int | None:

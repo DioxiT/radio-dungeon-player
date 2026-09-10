@@ -125,5 +125,83 @@ try:
 except bandcamp.NotBandcamp:
     check("page without tralbum raises", True)
 
+# --- rate limits ------------------------------------------------------------------
+# Refreshing the catalogue is hundreds of requests in a row and bandcamp answers 429
+# once it has had enough, so giving up on the first one loses those albums from the site.
+
+check("Retry-After в секундах уважается", bandcamp.retry_delay(0, "7") == 7,
+      str(bandcamp.retry_delay(0, "7")))
+check("Retry-After ограничен потолком",
+      bandcamp.retry_delay(0, "99999") == bandcamp.MAX_BACKOFF,
+      str(bandcamp.retry_delay(0, "99999")))
+check("Retry-After датой не ломает расчёт",
+      bandcamp.retry_delay(0, "Wed, 21 Oct 2026 07:28:00 GMT") == bandcamp.BACKOFF_BASE,
+      str(bandcamp.retry_delay(0, "Wed, 21 Oct 2026 07:28:00 GMT")))
+check("без Retry-After пауза растёт",
+      bandcamp.retry_delay(0, None) < bandcamp.retry_delay(1, None) < bandcamp.retry_delay(2, None))
+check("пауза не превышает потолок", bandcamp.retry_delay(50, None) == bandcamp.MAX_BACKOFF)
+
+
+class _Reply:
+    def __init__(self, status, text="", headers=None):
+        self.status_code = status
+        self.text = text
+        self.headers = headers or {}
+
+
+class _FakeClient:
+    """Stands in for httpx.Client, handing out a scripted sequence of replies."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = 0
+
+    def get(self, url):
+        self.calls += 1
+        return self.replies.pop(0) if self.replies else _Reply(200, "последний")
+
+
+# Keep the test instant: the point is the decision to retry, not the waiting.
+_real_base, _real_max = bandcamp.BACKOFF_BASE, bandcamp.MAX_BACKOFF
+bandcamp.BACKOFF_BASE, bandcamp.MAX_BACKOFF = 0, 0
+
+quiet = lambda *a, **k: None  # noqa: E731
+
+c = _FakeClient([_Reply(429, headers={"Retry-After": "0"}), _Reply(429), _Reply(200, "готово")])
+check("429 пережидается и запрос повторяется",
+      bandcamp.fetch_page(c, "https://x/a", log=quiet) == "готово", "не дождался")
+check("повторов ровно столько, сколько нужно", c.calls == 3, str(c.calls))
+
+c = _FakeClient([_Reply(503), _Reply(200, "ок")])
+check("5xx тоже повторяется", bandcamp.fetch_page(c, "https://x/b", log=quiet) == "ок")
+
+c = _FakeClient([_Reply(404, "нет такого")])
+check("404 не повторяется", bandcamp.fetch_page(c, "https://x/c", log=quiet) is None)
+check("на 404 ровно один запрос", c.calls == 1, str(c.calls))
+
+c = _FakeClient([_Reply(429) for _ in range(bandcamp.MAX_ATTEMPTS + 2)])
+check("бесконечный 429 заканчивается сдачей",
+      bandcamp.fetch_page(c, "https://x/d", log=quiet) is None)
+check("попыток не больше лимита", c.calls == bandcamp.MAX_ATTEMPTS, str(c.calls))
+
+
+class _BoomClient:
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.calls = 0
+
+    def get(self, url):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise OSError("сеть отвалилась")
+        return _Reply(200, "восстановилось")
+
+
+c = _BoomClient(2)
+check("сетевая ошибка тоже повторяется",
+      bandcamp.fetch_page(c, "https://x/e", log=quiet) == "восстановилось")
+
+bandcamp.BACKOFF_BASE, bandcamp.MAX_BACKOFF = _real_base, _real_max
+
 print("\nFailures:", len(failures) or "none")
 raise SystemExit(1 if failures else 0)

@@ -59,6 +59,18 @@ jobs:
           TG_DATA_DIR: ${{ github.workspace }}/site/data/catalog
         run: python tools/sync_catalog.py
 
+      # Links live 24h and this job runs every 6, so most runs can reuse what the
+      # previous one baked and touch bandcamp for nothing at all. That only works if
+      # the previous posts.json survives between runs - it is too big to commit four
+      # times a day, so it lives in the actions cache instead. A cache miss just means
+      # a full rebake, which is correct, only slower.
+      - name: Restore previously baked links
+        uses: actions/cache@v4
+        with:
+          path: site/data/posts.json
+          key: baked-links-${{ github.run_id }}
+          restore-keys: baked-links-
+
       - name: Bake stream urls
         run: python tools/build_site_data.py --tracks site/data/catalog/tracks.json
 
