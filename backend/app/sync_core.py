@@ -9,7 +9,7 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 
-from . import resolver, store
+from . import store
 
 URL_RE = re.compile(r"https?://\S+")
 
@@ -62,6 +62,11 @@ async def sync(fetch_posts) -> None:
     """
     if _status["running"]:
         return
+
+    # Imported here rather than at module level so the shared pieces above (Post,
+    # clean_links, URL_RE) can be used without yt-dlp installed at all - the web build
+    # reuses them to read the channel but expands albums through bandcamp's own json.
+    from . import resolver
 
     _status.update(running=True, processed=0, total=0, added=0, error=None)
     added_total = 0
