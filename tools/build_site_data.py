@@ -27,10 +27,12 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app import bandcamp  # noqa: E402
 
-TRACKS_FILE = ROOT / "backend" / "data" / "tracks.json"
+# Build inputs live outside site/ so that nothing but the player itself gets published.
+CATALOG_DIR = ROOT / "catalog"
+TRACKS_FILE = CATALOG_DIR / "tracks.json"
+ALBUM_CACHE = CATALOG_DIR / "albums.json"
 OUT_DIR = ROOT / "site" / "data"
 OUT_FILE = OUT_DIR / "posts.json"
-ALBUM_CACHE = OUT_DIR / "albums.json"
 
 CHANNEL = "radio_dungeon"
 REQUEST_DELAY = float(os.environ.get("BC_REQUEST_DELAY", "1.0"))
@@ -75,12 +77,17 @@ def group_posts(tracks: list[dict]) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=0, help="обработать только N постов")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="обработать только N самых свежих постов (для быстрой пробы)",
+    )
     ap.add_argument(
         "--tracks",
         type=Path,
         default=TRACKS_FILE,
-        help="откуда брать метаданные канала (по умолчанию backend/data/tracks.json)",
+        help="откуда брать метаданные канала (по умолчанию catalog/tracks.json)",
     )
     args = ap.parse_args()
 
@@ -93,7 +100,9 @@ def main() -> int:
 
     posts = group_posts(tracks)
     if args.limit:
-        posts = posts[: args.limit]
+        # Newest first: a short run is for eyeballing the result, and the oldest posts
+        # in this channel are mostly youtube, which the static build cannot bake anyway.
+        posts = sorted(posts, key=lambda p: p["message_id"] or 0, reverse=True)[: args.limit]
     print(f"постов: {len(posts)}, треков: {sum(len(p['tracks']) for p in posts)}")
 
     album_cache: dict[str, str] = load_json(ALBUM_CACHE, {})
@@ -202,6 +211,7 @@ def main() -> int:
     }
     with open(OUT_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    CATALOG_DIR.mkdir(parents=True, exist_ok=True)
     with open(ALBUM_CACHE, "w", encoding="utf-8") as f:
         json.dump(album_cache, f, ensure_ascii=False, indent=2)
 

@@ -56,7 +56,7 @@ jobs:
       - name: Sync new posts from the channel
         env:
           TG_MODE: anonymous
-          TG_DATA_DIR: ${{ github.workspace }}/site/data/catalog
+          TG_DATA_DIR: ${{ github.workspace }}/catalog
         run: python tools/sync_catalog.py
 
       # Links live 24h and this job runs every 6, so most runs can reuse what the
@@ -72,7 +72,7 @@ jobs:
           restore-keys: baked-links-
 
       - name: Bake stream urls
-        run: python tools/build_site_data.py --tracks site/data/catalog/tracks.json
+        run: python tools/build_site_data.py --tracks catalog/tracks.json
 
       # posts.json is rewritten every run and would bloat history fast, so it ships to
       # Pages as an artifact instead. Only the catalogue and the album cache are kept.
@@ -80,7 +80,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add site/data/catalog site/data/albums.json
+          git add catalog
           git diff --staged --quiet || git commit -m "Update channel catalogue"
           git push
 

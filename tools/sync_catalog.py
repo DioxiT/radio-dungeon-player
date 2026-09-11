@@ -7,7 +7,7 @@ lists its tracks, so the same expansion is a single request and a json parse.
 Reads the channel through its public web preview (see app/web_sync.py), so it needs no
 Telegram account - which is what lets it run unattended in CI.
 
-    TG_DATA_DIR=site/data/catalog python tools/sync_catalog.py
+    TG_DATA_DIR=catalog python tools/sync_catalog.py
 """
 
 import asyncio
