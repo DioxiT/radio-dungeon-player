@@ -117,6 +117,7 @@ async function loadPosts() {
   // no-store: the file is rewritten every few hours with fresh stream urls, and a
   // cached copy would hand the player links that have already expired.
   const res = await fetch("data/posts.json", { cache: "no-store" });
+  if (!res.ok) throw new Error(`data/posts.json: HTTP ${res.status}`);
   const payload = await res.json();
   dataGeneratedAt = payload.generated_at || 0;
   dataExpiresAt = payload.expires_at || 0;
@@ -792,9 +793,39 @@ async function refreshDataAndRetry(ref) {
   updateModeButtons();
 
   loadUserData();
-  await loadPosts();
   loadCategories();
+
+  try {
+    await loadPosts();
+  } catch (e) {
+    // Without the data file there is no player at all, so say so plainly instead of
+    // leaving an empty shell that looks like the channel simply has no music in it.
+    console.error(e);
+    showLoadFailure();
+    return;
+  }
+
   renderCategoryManager();
   renderCategoryFilterChips();
   renderPostList();
 })();
+
+function showLoadFailure() {
+  postListEl.textContent = "";
+  const box = document.createElement("div");
+  box.className = "load-failure";
+  box.appendChild(
+    Object.assign(document.createElement("div"), {
+      className: "load-failure-title",
+      textContent: "Не удалось загрузить список треков",
+    })
+  );
+  box.appendChild(
+    Object.assign(document.createElement("div"), {
+      textContent:
+        "Похоже, сайт сейчас обновляется — попробуй перезагрузить страницу через пару минут.",
+    })
+  );
+  postListEl.appendChild(box);
+  if (dataNote) dataNote.textContent = "список недоступен";
+}

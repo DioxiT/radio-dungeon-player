@@ -40,6 +40,14 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .buy-link:hover { color: #ddd; border-bottom-color: #ddd; }
 
+.load-failure {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: #999;
+  line-height: 1.6;
+}
+.load-failure-title { color: #ddd; font-size: 1.1rem; margin-bottom: 0.4rem; }
+
 .player {
   display: flex;
   gap: 1rem;
